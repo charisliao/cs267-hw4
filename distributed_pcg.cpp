@@ -123,11 +123,14 @@ public:
      * @return std::vector<double> result of the matrix-vector multiplication
     */
     std::vector<double> operator*(const std::vector<double>& xi) const {
-
-        std::vector<double> x(NbCol());
+        std::vector<double> x(NbRow());
         std::copy(xi.begin(), xi.end(), x.begin());
 
+        // Gather the whole vector x on each process, each process sends its local vector x
+        std::vector<double> x_global(NbCol());
+        MPI_Allgather(x.data(), NbRow(), MPI_DOUBLE, x_global.data(), NbRow(), MPI_DOUBLE, MPI_COMM_WORLD);
 
+        // local result
         std::vector<double> b(NbRow(), 0.);
 
         // iterate over all the rows
@@ -136,10 +139,22 @@ public:
             for (int k = row_ptrs[i]; k < row_ptrs[i + 1]; k++) {
                 int j = col_idxs[k];       // get column of non-zero entry k
                 double Mij = values[k];    // get value of non-zero entry k
-                b[i] += Mij * x[j];        
+                b[i] += Mij * x_global[j];        
             }
         }
         return b;
+    }
+
+    /**
+     * @brief Print the matrix
+    */
+   void print() {
+        for (int i = 0; i < NbRow(); i++) {
+            for (int j = 0; j < NbCol(); j++) {
+                std::cout << (*this)(i, j) << " ";
+            }
+            std::cout << std::endl;
+        }
     }
 };
 
@@ -343,6 +358,7 @@ int main(int argc, char* argv[]) {
 
     if (find_arg_idx(argc, argv, "-h") >= 0) {
         std::cout << "-N <int>: side length of the sparse matrix" << std::endl;
+        MPI_Finalize(); // Finalize MPI environment
         return 0;
     }
 
@@ -351,18 +367,18 @@ int main(int argc, char* argv[]) {
     assert(N % size == 0);
     int n = N / size; // number of local rows
 
-    // row-distributed matrix
+    // row-distributed local matrix
     CSRMatrix A(n, N);
 
     int offset = n * rank;
 
     // local rows of the 1D Laplacian matrix; local column indices start at -1 for rank > 0
     for (int i = 0; i < n; i++) {
-        A.Assign(i, i) = 2.0;
-        if (offset + i - 1 >= 0) A.Assign(i, i - 1) = -1;
-        if (offset + i + 1 < N)  A.Assign(i, i + 1) = -1;
-        if (offset + i + N < N) A.Assign(i, i + N) = -1;
-        if (offset + i - N >= 0) A.Assign(i, i - N) = -1;
+        A.Assign(i, offset + i) = 2.0;
+        if (offset + i - 1 >= 0) A.Assign(i, offset + i - 1) = -1;
+        if (offset + i + 1 < N)  A.Assign(i, offset + i + 1) = -1;
+        if (offset + i + N < N) A.Assign(i, offset + i + N) = -1;
+        if (offset + i - N >= 0) A.Assign(i, offset + i - N) = -1;
     }
 
     // initial guess

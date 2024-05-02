@@ -11,6 +11,9 @@
 typedef Eigen::SparseMatrix<double> SpMat; // declares a column-major sparse matrix type of double
 typedef Eigen::Triplet<double> T;
 
+/**
+ * @brief A class to represent a distributed sparse matrix in Compressed Sparse Row (CSR) format
+*/
 class CSRMatrix {
 public:
     unsigned int nbrow;                 // number of rows
@@ -409,6 +412,18 @@ int main(int argc, char* argv[]) {
     std::cout << "rank: " << rank << ", b: ";
     for (int i = 0; i < n; i++) {
         std::cout << b[i] << " ";
+    }
+
+    // Gather the local results b back to the root process
+    std::vector<double> b_global(N);
+    MPI_Gather(b.data(), n, MPI_DOUBLE, b_global.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    // Print Global Vector B
+    if (rank == 0) {
+        std::cout << "b_global: ";
+        for (int i = 0; i < N; i++) {
+            std::cout << b_global[i] << " ";
+        }
     }
 
     std::cout << std::endl;
