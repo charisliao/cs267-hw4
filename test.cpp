@@ -124,14 +124,6 @@ public:
         std::vector<double> x(NbCol());
         std::copy(xi.begin(), xi.end(), x.begin());
 
-        // Get the rank of the process
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-        // Gather the local vector to all processes
-        std::vector<double> global_x(NbCol());
-        MPI_Allgather(x.data(), NbCol(), MPI_DOUBLE, global_x.data(), NbCol(), MPI_DOUBLE, MPI_COMM_WORLD);
-        
 
         std::vector<double> b(NbRow(), 0.);
 
@@ -141,15 +133,10 @@ public:
             for (int k = row_ptrs[i]; k < row_ptrs[i + 1]; k++) {
                 int j = col_idxs[k];       // get column of non-zero entry k
                 double Mij = values[k];    // get value of non-zero entry k
-                b[i] += Mij * global_x[j];        
+                b[i] += Mij * x[j];        
             }
         }
-        
-        // Gather the local results back to the root process
-        std::vector<double> global_b(NbRow());
-        MPI_Gather(b.data(), NbRow(), MPI_DOUBLE, global_b.data(), NbRow(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-         
-        return global_b;
+        return b;
     }
 
     /**
@@ -191,12 +178,7 @@ double operator,(const std::vector<double>& u, const std::vector<double>& v) {
  * @return double norm 
 */
 double Norm(const std::vector<double>& u) {
-    // Gather the local vector to all processes
-    std::vector<double> global_u(u.size());
-    MPI_Allgather(u.data(), u.size(), MPI_DOUBLE, global_u.data(), u.size(), MPI_DOUBLE, MPI_COMM_WORLD);
-    
-    double norm = sqrt((global_u, global_u));
-    return norm;
+    return sqrt((u, u));
 }
 
 // addition of two vectors u+v
@@ -401,21 +383,25 @@ int main(int argc, char* argv[]) {
     double time = MPI_Wtime();
 
     // Multiply A by a vector x
-    std::vector<double> x(n, 1);
-    std::vector<double> b = A * x;
+    std::vector<double> x(n, 1), b = A * x;
 
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) std::cout << "wall time for CG: " << MPI_Wtime() - time << std::endl;
 
+    // Print Vector X
+    std::cout << "rank: " << rank << ", x: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << x[i] << " ";
+    }
+    std::cout << std::endl;
 
     // Print Vector B
-    if (rank == 0) {
-        std::cout << "rank: " << rank << ", b: ";
-        for (int i = 0; i < N; i++) {
-            std::cout << b[i] << " ";
-        }
-        std::cout << std::endl;
+    std::cout << "rank: " << rank << ", b: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << b[i] << " ";
     }
+
+    std::cout << std::endl;
 
     MPI_Finalize(); // Finalize the MPI environment
 
