@@ -121,9 +121,19 @@ public:
     */
     std::vector<double> operator*(const std::vector<double>& xi) const {
 
-        std::vector<double> x(NbCol());
+        std::vector<double> x(NbRow());
         std::copy(xi.begin(), xi.end(), x.begin());
 
+        // Gather the whole vector x on each process, each process sends its local vector x
+        std::vector<double> x_global(NbCol());
+        MPI_Allgather(x.data(), NbRow(), MPI_DOUBLE, x_global.data(), NbRow(), MPI_DOUBLE, MPI_COMM_WORLD);
+
+        //print the global vector x
+        std::cout << "x_global: " << std::endl;
+        for (int i = 0; i < NbCol(); i++) {
+            std::cout << x_global[i] << " ";
+        }
+        std::cout << std::endl;
 
         std::vector<double> b(NbRow(), 0.);
 
@@ -133,7 +143,7 @@ public:
             for (int k = row_ptrs[i]; k < row_ptrs[i + 1]; k++) {
                 int j = col_idxs[k];       // get column of non-zero entry k
                 double Mij = values[k];    // get value of non-zero entry k
-                b[i] += Mij * x[j];        
+                b[i] += Mij * x_global[j];        
             }
         }
         return b;
