@@ -28,7 +28,11 @@ if (NOT "${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
 endif ()
 
 add_executable(pcg distributed_pcg.cpp)
+add_executable(test test.cpp)
+add_executable(original original.cpp)
 target_link_libraries(pcg PRIVATE MPI::MPI_CXX Eigen3::Eigen)
+target_link_libraries(test PRIVATE MPI::MPI_CXX Eigen3::Eigen)
+target_link_libraries(original PRIVATE MPI::MPI_CXX Eigen3::Eigen)
 
 
 

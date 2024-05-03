@@ -286,13 +286,45 @@ void CG(const CSRMatrix& A,
     // get the local diagonal block of A
     std::vector<Eigen::Triplet<double>> coefficients;
 
-    for (int i = 0; i < n; i++) {  
-        for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
-            int j = A.col_idxs[k] - offset;
-            if (j >= 0 && j < n) 
-                coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
+    // for (int i = 0; i < n; i++) {  
+    
+    //     for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
+    //         int j = A.col_idxs[k];
+    //         if (j >= 0 && j < n) 
+    //             coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
+    //     }
+    // }
+    // get the local diagonal block of A
+
+    for (int i = 0; i < n; i++) {
+    // Start and end indices of non-zero elements in row i
+        int start = A.row_ptrs[i];
+        int end = A.row_ptrs[i + 1];
+
+        // Iterate only over local elements based on row ownership
+        for (int k = start; k < end; k++) {
+            int j = A.col_idxs[k];  // Get the global column index
+
+            // Check if the column index belongs to the current process's rows
+            if (j >= offset -1 && j <= offset + n) {
+            coefficients.push_back(Eigen::Triplet<double>(i, j - offset, A.values[k]));
+            }
         }
     }
+
+    // get the local diagonal block of A
+
+    // for (int i = 0; i < n; i++) {
+    // // Start and end indices of non-zero elements in row i
+    //     int start = A.row_ptrs[i];
+    //     int end = A.row_ptrs[i + 1];
+
+    //     // Iterate only over local elements (within the current process's rows)
+    //     for (int k = start; k < end; k++) {
+    //         coefficients.push_back(Eigen::Triplet<double>(i, A.col_idxs[k], A.values[k]));
+    //     }
+    // }
+
 
     //Print coefficients
     std::cout << "Rank: " << rank << ", Coefficients: " << coefficients.size() << std::endl;
@@ -463,6 +495,13 @@ int main(int argc, char* argv[]) {
     // }
 
     std::cout << std::endl;
+    std::vector<double> r = A * x + (-1) * b;
+
+    std::cout << "norm of the residual: " << Norm(r) << std::endl;
+    std::cout << "norm of the solution: " << Norm(b) << std::endl;  
+
+    double err = Norm(r) / Norm(b);
+    if (rank == 0) std::cout << "|Ax-b|/|b| = " << err << std::endl;
 
     MPI_Finalize(); // Finalize the MPI environment
 
