@@ -127,19 +127,85 @@ public:
         std::vector<double> x(NbRow());
         std::copy(xi.begin(), xi.end(), x.begin());
 
-        // Gather the whole vector x on each process, each process sends its local vector x
-        std::vector<double> x_global(NbCol());
-        MPI_Allgather(x.data(), NbRow(), MPI_DOUBLE, x_global.data(), NbRow(), MPI_DOUBLE, MPI_COMM_WORLD);
+        // Gather the first or last value of the local vector before and after current process
+        std::vector<double> x_global = x;
+
+        int rank, size;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the process
+        MPI_Comm_size(MPI_COMM_WORLD, &size); // Get the number of processes
+
+        int offset = NbRow() * rank;
+
+        MPI_Request send_request_before, send_request_after, recv_request_before, recv_request_after;
+
+        // If there is more than once process, communicate with the previous and next process
+        if (size > 1) {
+
+            double x_before = 0., x_after = 0.;
+            
+            if (rank == 0) {
+                // Send the last value of the local vector to the next process
+                MPI_Isend(&x[NbRow() - 1], 1, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, &send_request_after);
+                MPI_Wait(&send_request_after, MPI_STATUS_IGNORE);
+            }
+
+            // Last rank
+            else if (rank == size - 1) {
+                // Send the first value of the local vector to the previous process
+                MPI_Isend(&x[0], 1, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, &send_request_before);
+                MPI_Wait(&send_request_before, MPI_STATUS_IGNORE);
+            }
+
+            // Intermediate ranks
+            else {
+                // Send the first value of the local vector to the previous process
+                MPI_Isend(&x[0], 1, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, &send_request_before);
+                // Send the last value of the local vector to the next process
+                MPI_Isend(&x[NbRow() - 1], 1, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, &send_request_after);
+                MPI_Wait(&send_request_before, MPI_STATUS_IGNORE);
+                MPI_Wait(&send_request_after, MPI_STATUS_IGNORE);
+            }
+
+            // Receive the local vector values
+            if (rank == 0) {
+                MPI_Irecv(&x_after, 1, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, &recv_request_after);
+                MPI_Wait(&recv_request_after, MPI_STATUS_IGNORE);
+                x_global.push_back(x_after);
+            }
+
+            // Last rank
+            else if (rank == size - 1) {
+                MPI_Irecv(&x_before, 1, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, &recv_request_before);
+                MPI_Wait(&recv_request_before, MPI_STATUS_IGNORE);
+                x_global.insert(x_global.begin(), x_before);
+            }
+
+            // Intermediate ranks
+            else {
+                MPI_Irecv(&x_before, 1, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, &recv_request_before);
+                MPI_Irecv(&x_after, 1, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, &recv_request_after);
+                MPI_Wait(&recv_request_before, MPI_STATUS_IGNORE);
+                MPI_Wait(&recv_request_after, MPI_STATUS_IGNORE);
+                x_global.insert(x_global.begin(), x_before);
+                x_global.push_back(x_after);
+            }
+        }
 
         std::vector<double> b(NbRow(), 0.);
 
-        // iterate over all the rows
+        
+        // Matrix-vector multiplication
         for (int i = 0; i < NbRow(); i++) {
-            // iterate over the non-zero entries in row i
             for (int k = row_ptrs[i]; k < row_ptrs[i + 1]; k++) {
-                int j = col_idxs[k];       // get column of non-zero entry k
-                double Mij = values[k];    // get value of non-zero entry k
-                b[i] += Mij * x_global[j];        
+                int j = col_idxs[k];
+                double Mij = values[k];
+                // Update b using the local column index
+                if (offset - 1 >= 0) {
+                    b[i] += Mij * x_global[j - (offset - 1)];
+                }
+                else {
+                    b[i] += Mij * x_global[j];
+                }
             }
         }
         return b;
@@ -271,60 +337,28 @@ void CG(const CSRMatrix& A,
     std::vector<double>& x,
     double tol = 1e-6) {
 
-    // local vectors
     assert(b.size() == A.NbRow());
     x.assign(b.size(), 0.);
 
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the process
 
-    // number of local rows
     int n = A.NbRow();
-
     int offset = n * rank;
+
+    std::cout <<"offset: " << offset << " << rank: " << rank << std::endl;
 
     // get the local diagonal block of A
     std::vector<Eigen::Triplet<double>> coefficients;
 
-    // for (int i = 0; i < n; i++) {  
-    
-    //     for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
-    //         int j = A.col_idxs[k];
-    //         if (j >= 0 && j < n) 
-    //             coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
-    //     }
-    // }
-    // get the local diagonal block of A
-
-    for (int i = 0; i < n; i++) {
-    // Start and end indices of non-zero elements in row i
-        int start = A.row_ptrs[i];
-        int end = A.row_ptrs[i + 1];
-
-        // Iterate only over local elements based on row ownership
-        for (int k = start; k < end; k++) {
-            int j = A.col_idxs[k];  // Get the global column index
-
-            // Check if the column index belongs to the current process's rows
-            if (j >= offset -1 && j <= offset + n) {
-            coefficients.push_back(Eigen::Triplet<double>(i, j - offset, A.values[k]));
-            }
+    for (int i = 0; i < n; i++) {  
+        for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
+            int j = A.col_idxs[k];  
+            std::cout << "Rank: " << rank << ", i: " << i << ", j: " << j << ", A.values[k]: " << A.values[k] << ", j - offset: " << j - offset << std::endl;
+            if (j - offset >= -1 && j - offset <= n) 
+                coefficients.push_back(Eigen::Triplet<double>(i, j - offset, A.values[k]));
         }
     }
-
-    // get the local diagonal block of A
-
-    // for (int i = 0; i < n; i++) {
-    // // Start and end indices of non-zero elements in row i
-    //     int start = A.row_ptrs[i];
-    //     int end = A.row_ptrs[i + 1];
-
-    //     // Iterate only over local elements (within the current process's rows)
-    //     for (int k = start; k < end; k++) {
-    //         coefficients.push_back(Eigen::Triplet<double>(i, A.col_idxs[k], A.values[k]));
-    //     }
-    // }
-
 
     //Print coefficients
     std::cout << "Rank: " << rank << ", Coefficients: " << coefficients.size() << std::endl;
@@ -337,58 +371,20 @@ void CG(const CSRMatrix& A,
     // compute the Cholesky factorization of the diagonal block for the preconditioner
     Eigen::SparseMatrix<double> B(n, n);
     B.setFromTriplets(coefficients.begin(), coefficients.end());
-    Eigen::SimplicialCholesky<Eigen::SparseMatrix<double>> P(B);   // Cholesky factorization of the diagonal block
+    Eigen::SimplicialCholesky<Eigen::SparseMatrix<double>> P(B);
 
-
-
-    std::vector<double> r = b;             // residual
-    std::vector<double> z = prec(P, r);    // preconditioned residual
-    std::vector<double> p = z;             // search direction
-    std::vector<double> Ap = A * p;        // matrix-vector product
-
-    // Print r and z
-    std::cout << "Rank: " << rank << ", r: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << r[i] << " ";
-    }
-
-    std::cout << std::endl;
-
-    std::cout << "Rank: " << rank << ", z: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << z[i] << " ";
-    }
-
-    std::cout << std::endl;
-
-
-    //Print p and Ap
-    std::cout << "Rank: " << rank << ", p: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << p[i] << " ";
-    }
-
-    std::cout << std::endl;
-
-    std::cout << "Rank: " << rank << ", Ap: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << Ap[i] << " ";
-    }
-
-    std::cout << std::endl;
-
-    double np2 = (p, Ap), alpha = 0., beta = 0.;      
-    double nr = sqrt((z, r));              
+    std::vector<double> r = b, z = prec(P, r), p = z, Ap = A * p;
+    double np2 = (p, Ap), alpha = 0., beta = 0.;
+    double nr = sqrt((z, r));
     double epsilon = tol * nr;
 
     std::vector<double> res = A * x;
-
     res += (-1) * b;
 
     double rres = Norm(res);
 
     int num_it = 0;
-    while (rres > epsilon) {
+    while (rres > 1e-5) {
         alpha = (nr * nr) / (np2);
         x += (+alpha) * p;
         r += (-alpha) * Ap;
@@ -476,31 +472,14 @@ int main(int argc, char* argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     double time = MPI_Wtime();
 
-    CG(A, b, x);
+    CG(A,b,x);
 
     MPI_Barrier(MPI_COMM_WORLD);
-    if (rank == 0) std::cout << "wall time for CG: " << MPI_Wtime() - time << std::endl;
+    if (rank == 0) std::cout << "wall time for CG: " << MPI_Wtime()-time << std::endl;
 
+    std::vector<double> r = A*x + (-1)*b;
 
-    // // Gather the local results b back to the root process
-    // std::vector<double> b_global(N);
-    // MPI_Gather(b.data(), n, MPI_DOUBLE, b_global.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    // // Print Global Vector B
-    // if (rank == 0) {
-    //     std::cout << "b_global: ";
-    //     for (int i = 0; i < N; i++) {
-    //         std::cout << b_global[i] << " ";
-    //     }
-    // }
-
-    std::cout << std::endl;
-    std::vector<double> r = A * x + (-1) * b;
-
-    std::cout << "norm of the residual: " << Norm(r) << std::endl;
-    std::cout << "norm of the solution: " << Norm(b) << std::endl;  
-
-    double err = Norm(r) / Norm(b);
+    double err = Norm(r)/Norm(b);
     if (rank == 0) std::cout << "|Ax-b|/|b| = " << err << std::endl;
 
     MPI_Finalize(); // Finalize the MPI environment
