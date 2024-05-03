@@ -131,13 +131,6 @@ public:
         std::vector<double> x_global(NbCol());
         MPI_Allgather(x.data(), NbRow(), MPI_DOUBLE, x_global.data(), NbRow(), MPI_DOUBLE, MPI_COMM_WORLD);
 
-        //print the global vector x
-        std::cout << "x_global: " << std::endl;
-        for (int i = 0; i < NbCol(); i++) {
-            std::cout << x_global[i] << " ";
-        }
-        std::cout << std::endl;
-
         std::vector<double> b(NbRow(), 0.);
 
         // iterate over all the rows
@@ -176,11 +169,11 @@ public:
 */
 double operator,(const std::vector<double>& u, const std::vector<double>& v) {
     assert(u.size() == v.size());
-    double sp = 0.;
-    for (int j = 0; j < u.size(); j++) { 
-        sp += u[j] * v[j]; 
-    }
-    return sp;
+
+    double local_sp = std::inner_product(u.begin(), u.end(), v.begin(), 0.0);
+    double global_sp = 0.0;
+    MPI_Allreduce(&local_sp, &global_sp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    return global_sp;
 }
 
 // norm of a vector u
@@ -253,12 +246,12 @@ void operator+=(std::vector<double>& u, const std::vector<double>& v) {
  * @return std::vector<double> result of the forward and backward substitution
 */
 std::vector<double> prec(const Eigen::SimplicialCholesky<Eigen::SparseMatrix<double>>& P, const std::vector<double>& u) {
-    Eigen::VectorXd b(u.size());
-    for (int i = 0; i < u.size(); i++) 
+    Eigen::VectorXd b(u.size());          // local vector
+    for (int i = 0; i < u.size(); i++)    // copy the distributed vector u to the local vector b
         b[i] = u[i];
-    Eigen::VectorXd xe = P.solve(b);
-    std::vector<double> x(u.size());
-    for (int i = 0; i < u.size(); i++) 
+    Eigen::VectorXd xe = P.solve(b);     // solve the linear system using the Cholesky factorization
+    std::vector<double> x(u.size());     // distributed vector
+    for (int i = 0; i < u.size(); i++)   // copy the local vector xe to the distributed vector x
         x[i] = xe[i];
     return x;
 }
@@ -278,42 +271,92 @@ void CG(const CSRMatrix& A,
     std::vector<double>& x,
     double tol = 1e-6) {
 
+    // local vectors
     assert(b.size() == A.NbRow());
     x.assign(b.size(), 0.);
 
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the process
 
+    // number of local rows
     int n = A.NbRow();
+
+    int offset = n * rank;
 
     // get the local diagonal block of A
     std::vector<Eigen::Triplet<double>> coefficients;
 
     for (int i = 0; i < n; i++) {  
         for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
-            int j = A.col_idxs[k];  
+            int j = A.col_idxs[k] - offset;
             if (j >= 0 && j < n) 
                 coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
         }
     }
 
+    //Print coefficients
+    std::cout << "Rank: " << rank << ", Coefficients: " << coefficients.size() << std::endl;
+    for (int i = 0; i < coefficients.size(); i++) {
+        std::cout << coefficients[i].value() << " ";
+    }
+
+    std::cout << std::endl;
+
     // compute the Cholesky factorization of the diagonal block for the preconditioner
     Eigen::SparseMatrix<double> B(n, n);
     B.setFromTriplets(coefficients.begin(), coefficients.end());
-    Eigen::SimplicialCholesky<Eigen::SparseMatrix<double>> P(B);
+    Eigen::SimplicialCholesky<Eigen::SparseMatrix<double>> P(B);   // Cholesky factorization of the diagonal block
 
-    std::vector<double> r = b, z = prec(P, r), p = z, Ap = A * p;
-    double np2 = (p, Ap), alpha = 0., beta = 0.;
-    double nr = sqrt((z, r));
+
+
+    std::vector<double> r = b;             // residual
+    std::vector<double> z = prec(P, r);    // preconditioned residual
+    std::vector<double> p = z;             // search direction
+    std::vector<double> Ap = A * p;        // matrix-vector product
+
+    // Print r and z
+    std::cout << "Rank: " << rank << ", r: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << r[i] << " ";
+    }
+
+    std::cout << std::endl;
+
+    std::cout << "Rank: " << rank << ", z: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << z[i] << " ";
+    }
+
+    std::cout << std::endl;
+
+
+    //Print p and Ap
+    std::cout << "Rank: " << rank << ", p: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << p[i] << " ";
+    }
+
+    std::cout << std::endl;
+
+    std::cout << "Rank: " << rank << ", Ap: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << Ap[i] << " ";
+    }
+
+    std::cout << std::endl;
+
+    double np2 = (p, Ap), alpha = 0., beta = 0.;      
+    double nr = sqrt((z, r));              
     double epsilon = tol * nr;
 
     std::vector<double> res = A * x;
+
     res += (-1) * b;
 
-    double rres = sqrt((res, res));
+    double rres = Norm(res);
 
     int num_it = 0;
-    while (rres > 1e-5) {
+    while (rres > epsilon) {
         alpha = (nr * nr) / (np2);
         x += (+alpha) * p;
         r += (-alpha) * Ap;
@@ -324,7 +367,7 @@ void CG(const CSRMatrix& A,
         Ap = A * p;
         np2 = (p, Ap);
 
-        rres = sqrt((r, r));
+        rres = Norm(r);
 
         num_it++;
         if (rank == 0 && !(num_it % 1)) {
@@ -392,39 +435,32 @@ int main(int argc, char* argv[]) {
     std::cout << "Rank: " << rank << ", Local Matrix A: " << std::endl;
     A.print();
 
+    // initial guess
+    std::vector<double> x(n,0);
+
+    // right-hand side
+    std::vector<double> b(n,1);
+
     MPI_Barrier(MPI_COMM_WORLD);
     double time = MPI_Wtime();
 
-    // Multiply A by a vector x
-    std::vector<double> x(n, 1), b = A * x;
+    CG(A, b, x);
 
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) std::cout << "wall time for CG: " << MPI_Wtime() - time << std::endl;
 
-    // Print Vector X
-    std::cout << "rank: " << rank << ", x: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << x[i] << " ";
-    }
-    std::cout << std::endl;
 
-    // Print Vector B
-    std::cout << "rank: " << rank << ", b: ";
-    for (int i = 0; i < n; i++) {
-        std::cout << b[i] << " ";
-    }
+    // // Gather the local results b back to the root process
+    // std::vector<double> b_global(N);
+    // MPI_Gather(b.data(), n, MPI_DOUBLE, b_global.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    // Gather the local results b back to the root process
-    std::vector<double> b_global(N);
-    MPI_Gather(b.data(), n, MPI_DOUBLE, b_global.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    // Print Global Vector B
-    if (rank == 0) {
-        std::cout << "b_global: ";
-        for (int i = 0; i < N; i++) {
-            std::cout << b_global[i] << " ";
-        }
-    }
+    // // Print Global Vector B
+    // if (rank == 0) {
+    //     std::cout << "b_global: ";
+    //     for (int i = 0; i < N; i++) {
+    //         std::cout << b_global[i] << " ";
+    //     }
+    // }
 
     std::cout << std::endl;
 
