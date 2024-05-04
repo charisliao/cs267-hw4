@@ -341,12 +341,14 @@ void CG(const CSRMatrix& A,
     x.assign(b.size(), 0.);
 
     int rank;
+    int size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the process
-
+    MPI_Comm_size(MPI_COMM_WORLD, &size); // Get the number of processes
     int n = A.NbRow();
     int offset = n * rank;
+    // int N = find_int_arg(argc, argv, "-N", 100000);
 
-    std::cout <<"offset: " << offset << " << rank: " << rank << std::endl;
+    // std::cout <<"offset: " << offset << " << rank: " << rank << std::endl;
 
     // get the local diagonal block of A
     std::vector<Eigen::Triplet<double>> coefficients;
@@ -354,17 +356,27 @@ void CG(const CSRMatrix& A,
     for (int i = 0; i < n; i++) {  
         for (int k = A.row_ptrs[i]; k < A.row_ptrs[i + 1]; k++) {   
             int j = A.col_idxs[k];  
-            std::cout << "Rank: " << rank << ", i: " << i << ", j: " << j << ", A.values[k]: " << A.values[k] << ", j - offset: " << j - offset << std::endl;
-            if (j - offset >= -1 && j - offset <= n) 
-                coefficients.push_back(Eigen::Triplet<double>(i, j - offset, A.values[k]));
+            if (rank == 0) {
+                coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
+            } else {
+
+                std::cout << "Rank: " << rank << ", i: " << i << ", j: " << j << ", A.values[k]: " << A.values[k] << ", j - offset: " << j - offset << std::endl;
+                if (j - offset >= 0 && j - offset <= n) {
+                    coefficients.push_back(Eigen::Triplet<double>(i, j-offset, A.values[k]));
+                    // std::cout << "Rank: " << rank <<"right range" << ", i: " << i << ", j: " << j  << ", value: " << A.values[k] << std::endl;
+                } else if (j - offset < 0) {
+                    coefficients.push_back(Eigen::Triplet<double>(i, j - offset + n, A.values[k]));
+                    // std::cout << "Rank: " << rank <<"j-offset < 0"<< ", i: " << i << ", j: " << j - offset + n << ", value: " << A.values[k] << std::endl;
+                } else if (j - offset > n) {
+                    coefficients.push_back(Eigen::Triplet<double>(i, j, A.values[k]));
+                    // std::cout << "Rank: " << rank <<"j-offset >= n"<< ", i: " << i << ", j: " << j - offset - 1 << ", value: " << A.values[k] << std::endl;
+                }
+            }
         }
     }
 
-    //Print coefficients
-    std::cout << "Rank: " << rank << ", Coefficients: " << coefficients.size() << std::endl;
-    for (int i = 0; i < coefficients.size(); i++) {
-        std::cout << coefficients[i].value() << " ";
-    }
+
+    
 
     std::cout << std::endl;
 
@@ -479,7 +491,13 @@ int main(int argc, char* argv[]) {
 
     std::vector<double> r = A*x + (-1)*b;
 
-    double err = Norm(r)/Norm(b);
+    // gather distributed vector x to the root process
+    std::vector<double> x_global(N, 0.);
+    MPI_Gather(x.data(), n, MPI_DOUBLE, x_global.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+
+
+    double err = Norm(x_global)/Norm(b);
     if (rank == 0) std::cout << "|Ax-b|/|b| = " << err << std::endl;
 
     MPI_Finalize(); // Finalize the MPI environment
